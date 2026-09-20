@@ -2,13 +2,30 @@ import type { FastifyInstance } from 'fastify';
 
 export type SpruceNodeRole = 'core' | 'app';
 
-export type SpruceNodeConfig = {
-  host: string;
-  port: number;
+export type SiteRecord = {
+  origin: string;
   jwtSecret: string;
   webhookSecret: string;
   wpBaseUrl: string;
-  corsOrigin: string;
+  modules?: string[];
+};
+
+export type SiteRegistry = {
+  all(): SiteRecord[];
+  origins(): string[];
+  get(origin: string): SiteRecord | undefined;
+  resolve(candidate: string): SiteRecord | undefined;
+  defaultSite(): SiteRecord | undefined;
+};
+
+export type SpruceNodeConfig = {
+  host: string;
+  port: number;
+  sites?: SiteRecord[];
+  jwtSecret?: string;
+  webhookSecret?: string;
+  wpBaseUrl?: string;
+  corsOrigin?: string;
 };
 
 export type HubMessage = {
@@ -19,15 +36,17 @@ export type HubMessage = {
 };
 
 export type RoomRegistry = {
-  allow(pattern: RegExp): void;
-  isAllowed(room: string): boolean;
+  allow(pattern: RegExp, module?: string): void;
+  isAllowed(room: string, site?: SiteRecord): boolean;
 };
 
 export type Hub = {
-  broadcast(rooms: string[], message: HubMessage): number;
-  subscribe(socketId: string, rooms: string[]): string[];
-  unsubscribe(socketId: string, rooms: string[]): string[];
+  broadcast(rooms: string[], message: HubMessage, site?: SiteRecord): number;
+  subscribe(socketId: string, rooms: string[], site?: SiteRecord): string[];
+  unsubscribe(socketId: string, rooms: string[], site?: SiteRecord): string[];
   attach(socketId: string, send: (data: string) => void): void;
+  bindSite(socketId: string, site: SiteRecord | undefined): void;
+  siteOf(socketId: string): SiteRecord | undefined;
   drop(socketId: string): void;
   size(): number;
 };
@@ -51,7 +70,7 @@ export type JwtClaims = {
 };
 
 export type JwtVerifier = {
-  verify(token: string): Promise<JwtClaims>;
+  verify(token: string, originHint?: string): Promise<JwtClaims>;
 };
 
 export type WordPressClient = {
@@ -66,6 +85,8 @@ export type SpruceNodeApp = {
   webhooks: WebhookRegistry;
   jwt: JwtVerifier;
   wordpress: WordPressClient;
+  sites: SiteRegistry;
+  site?: SiteRecord;
   modules: string[];
   use(mod: SpruceNodeModule): Promise<void>;
   listen(): Promise<{ host: string; port: number }>;

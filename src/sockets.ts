@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, Server } from 'node:http';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
-import type { Hub, JwtVerifier, RoomRegistry } from './types.ts';
+import { canonicalizeOrigin } from './sites.ts';
+import type { Hub, JwtVerifier, RoomRegistry, SiteRegistry } from './types.ts';
 
 type ClientMessage = {
   type?: string;
@@ -13,11 +14,12 @@ export function attachSockets(
   server: Server,
   hub: Hub,
   rooms: RoomRegistry,
-  jwt: JwtVerifier
+  jwt: JwtVerifier,
+  sites: SiteRegistry
 ): WebSocketServer {
   const wss = new WebSocketServer({ server, path: '/ws' });
 
-  wss.on('connection', (socket: WebSocket, _request: IncomingMessage) => {
+  wss.on('connection', (socket: WebSocket, request: IncomingMessage) => {
     const socketId = randomUUID();
     hub.attach(socketId, (data) => {
       if (socket.readyState === socket.OPEN) {
@@ -25,10 +27,21 @@ export function attachSockets(
       }
     });
 
-    send(socket, { type: 'hello', public: true });
+    const originHeader = headerValue(request.headers.origin);
+    const fromOrigin = originHeader ? sites.resolve(originHeader) : undefined;
+    const site = fromOrigin ?? sites.defaultSite();
+    if (site) {
+      hub.bindSite(socketId, site);
+    }
+
+    send(socket, {
+      type: 'hello',
+      public: true,
+      site: site?.origin ?? '',
+    });
 
     socket.on('message', (raw: RawData) => {
-      void handleMessage(socket, socketId, raw, hub, rooms, jwt);
+      void handleMessage(socket, socketId, raw, hub, rooms, jwt, sites);
     });
 
     socket.on('close', () => {
@@ -45,7 +58,8 @@ async function handleMessage(
   raw: RawData,
   hub: Hub,
   rooms: RoomRegistry,
-  jwt: JwtVerifier
+  jwt: JwtVerifier,
+  sites: SiteRegistry
 ): Promise<void> {
   let message: ClientMessage;
   try {
@@ -58,7 +72,16 @@ async function handleMessage(
   if (message.type === 'auth') {
     const token = typeof message.token === 'string' ? message.token : '';
     try {
-      const claims = await jwt.verify(token);
+      const bound = hub.siteOf(socketId);
+      const claims = await jwt.verify(token, bound?.origin);
+      const fromIss = claims.iss ? sites.resolve(claims.iss) : undefined;
+      if (fromIss) {
+        if (bound && fromIss.origin !== bound.origin) {
+          send(socket, { type: 'error', message: 'origin_mismatch' });
+          return;
+        }
+        hub.bindSite(socketId, fromIss);
+      }
       send(socket, { type: 'authed', sub: claims.sub, name: claims.name ?? '' });
     } catch {
       send(socket, { type: 'error', message: 'invalid_token' });
@@ -67,13 +90,19 @@ async function handleMessage(
   }
 
   if (message.type === 'subscribe' || message.type === 'unsubscribe') {
+    const site = hub.siteOf(socketId);
+    if (!site) {
+      send(socket, { type: 'error', message: 'unknown_origin' });
+      return;
+    }
+
     const requested = Array.isArray(message.rooms)
       ? message.rooms.filter((room): room is string => typeof room === 'string')
       : [];
-    const allowed = requested.filter((room) => rooms.isAllowed(room));
+    const allowed = requested.filter((room) => rooms.isAllowed(room, site));
     const applied = message.type === 'subscribe'
-      ? hub.subscribe(socketId, allowed)
-      : hub.unsubscribe(socketId, allowed);
+      ? hub.subscribe(socketId, allowed, site)
+      : hub.unsubscribe(socketId, allowed, site);
 
     send(socket, {
       type: message.type === 'subscribe' ? 'subscribed' : 'unsubscribed',
@@ -83,6 +112,14 @@ async function handleMessage(
   }
 
   send(socket, { type: 'error', message: 'unknown_type' });
+}
+
+function headerValue(value: string | string[] | undefined): string {
+  if (Array.isArray(value)) {
+    return canonicalizeOrigin(value[0] ?? '');
+  }
+
+  return canonicalizeOrigin(value ?? '');
 }
 
 function send(socket: WebSocket, payload: Record<string, unknown>): void {
