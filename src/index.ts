@@ -146,7 +146,12 @@ export async function createApp(config: SpruceNodeConfig): Promise<SpruceNodeApp
     async listen(): Promise<{ host: string; port: number }> {
       await http.ready();
       attachSockets(http.server, hub, rooms, jwt, sites);
-      const address = await http.listen({ host: config.host, port: config.port });
+      const address = await http.listen({
+        host: config.host,
+        port: config.port,
+        // Kernel truncates this to net.core.somaxconn (4096 on the VPS).
+        backlog: 8192,
+      });
       const port = boundPort(address, config.port);
       app.http.log.info(
         { address, modules: loaded, sites: sites.origins() },
