@@ -5,14 +5,15 @@ import type { Hub, HubMessage, RoomRegistry, SiteRecord } from './types.ts';
 type AllowedPattern = {
   pattern: RegExp;
   module?: string;
+  auth: boolean;
 };
 
 export function createRooms(): RoomRegistry {
   const patterns: AllowedPattern[] = [];
 
   return {
-    allow(pattern: RegExp, module?: string): void {
-      patterns.push({ pattern, module });
+    allow(pattern: RegExp, module?: string, auth = false): void {
+      patterns.push({ pattern, module, auth });
     },
     isAllowed(room: string, site?: SiteRecord): boolean {
       const match = patterns.find((entry) => entry.pattern.test(room));
@@ -26,6 +27,10 @@ export function createRooms(): RoomRegistry {
       }
 
       return allowed.includes(match.module);
+    },
+    requiresAuth(room: string): boolean {
+      const match = patterns.find((entry) => entry.pattern.test(room));
+      return match?.auth === true;
     },
   };
 }
