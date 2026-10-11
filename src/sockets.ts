@@ -18,6 +18,7 @@ export function attachSockets(
   sites: SiteRegistry
 ): WebSocketServer {
   const wss = new WebSocketServer({ server, path: '/ws' });
+  const authed = new Set<string>();
 
   wss.on('connection', (socket: WebSocket, request: IncomingMessage) => {
     const socketId = randomUUID();
@@ -40,11 +41,19 @@ export function attachSockets(
       site: site?.origin ?? '',
     });
 
+    // Auth verification is async. Keep this socket's messages in order so a
+    // subscribe that follows a token is checked after that token is accepted.
+    let chain = Promise.resolve();
     socket.on('message', (raw: RawData) => {
-      void handleMessage(socket, socketId, raw, hub, rooms, jwt, sites);
+      chain = chain
+        .then(() => handleMessage(socket, socketId, raw, hub, rooms, jwt, sites, authed))
+        .catch(() => {
+          send(socket, { type: 'error', message: 'internal' });
+        });
     });
 
     socket.on('close', () => {
+      authed.delete(socketId);
       hub.drop(socketId);
     });
   });
@@ -59,7 +68,8 @@ async function handleMessage(
   hub: Hub,
   rooms: RoomRegistry,
   jwt: JwtVerifier,
-  sites: SiteRegistry
+  sites: SiteRegistry,
+  authed: Set<string>
 ): Promise<void> {
   let message: ClientMessage;
   try {
@@ -82,8 +92,10 @@ async function handleMessage(
         }
         hub.bindSite(socketId, fromIss);
       }
+      authed.add(socketId);
       send(socket, { type: 'authed', sub: claims.sub, name: claims.name ?? '' });
     } catch {
+      authed.delete(socketId);
       send(socket, { type: 'error', message: 'invalid_token' });
     }
     return;
@@ -100,9 +112,18 @@ async function handleMessage(
       ? message.rooms.filter((room): room is string => typeof room === 'string')
       : [];
     const allowed = requested.filter((room) => rooms.isAllowed(room, site));
+    let accepted = allowed;
+    if (message.type === 'subscribe') {
+      const denied = allowed.filter((room) => rooms.requiresAuth(room) && !authed.has(socketId));
+      if (denied.length > 0) {
+        send(socket, { type: 'error', message: 'auth_required', rooms: denied });
+        const blocked = new Set(denied);
+        accepted = allowed.filter((room) => !blocked.has(room));
+      }
+    }
     const applied = message.type === 'subscribe'
-      ? hub.subscribe(socketId, allowed, site)
-      : hub.unsubscribe(socketId, allowed, site);
+      ? hub.subscribe(socketId, accepted, site)
+      : hub.unsubscribe(socketId, accepted, site);
 
     send(socket, {
       type: message.type === 'subscribe' ? 'subscribed' : 'unsubscribed',

@@ -36,8 +36,9 @@ export type HubMessage = {
 };
 
 export type RoomRegistry = {
-  allow(pattern: RegExp, module?: string): void;
+  allow(pattern: RegExp, module?: string, auth?: boolean): void;
   isAllowed(room: string, site?: SiteRecord): boolean;
+  requiresAuth(room: string): boolean;
 };
 
 export type Hub = {

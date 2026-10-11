@@ -27,9 +27,12 @@ CORS and WebSocket `Origin` checks use the same list. JWT `iss` must match the s
 
 Clients connect to `/ws` without a token to watch public rooms. The browser `Origin` (or the sole registered site) selects the tenant. Browser JS still sends unprefixed room names.
 
+`rooms.allow(pattern, module, auth)` takes an auth flag. Auction and cart rooms leave it unset, so they stay public. A room registered with the flag set refuses `subscribe` until that socket has sent `{ "type": "auth", "token": "<jwt>" }` and the JWT checks out. WordPress issues that token only for a logged-in user.
+
 ```
 { "type": "subscribe", "rooms": ["auction:12"] }
 { "type": "auth", "token": "<jwt>" }
+{ "type": "subscribe", "rooms": ["perf:vps1"] }
 ```
 
 Application modules register room patterns and webhook handlers, then broadcast the same public names. The hub stores `site:{origin}:{room}` internally.
